@@ -605,11 +605,17 @@ fn launcher_does_not_override_codex_app_environment() {
 }
 
 #[test]
-fn launcher_uses_all_com_server_contexts_for_packaged_app_activation() {
+fn launcher_packaged_activation_requires_the_out_of_process_windows_broker() {
     let source = include_str!("../src/launcher.rs");
+    let start = source.find("fn activate_packaged_app_blocking(").unwrap();
+    let activation = &source[start..source[start..].find("#[cfg(test)]").unwrap() + start];
 
-    assert!(source.contains("CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)?"));
-    assert!(!source.contains("CLSCTX_LOCAL_SERVER"));
+    assert!(activation.contains(
+        "CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?"
+    ));
+    assert!(!activation.contains("None, CLSCTX_ALL"));
+    assert!(activation.contains("AO_NOERRORUI,"));
+    assert!(activation.contains("CoUninitialize();"));
 }
 
 #[test]
@@ -839,20 +845,6 @@ fn launcher_packaged_activation_does_not_directly_fallback_to_windowsapps_exe() 
     assert!(source.contains("return Err(error).with_context(||"));
     assert!(source.contains("direct executable fallback is disabled to preserve package identity"));
     assert!(!source.contains("terminate_windows_process_id(process_id).await"));
-}
-
-#[test]
-fn launcher_packaged_activation_requires_the_out_of_process_windows_broker() {
-    let source = include_str!("../src/launcher.rs");
-    let start = source.find("fn activate_packaged_app_blocking(").unwrap();
-    let activation = &source[start..source[start..].find("#[cfg(test)]").unwrap() + start];
-
-    assert!(activation.contains(
-        "CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?"
-    ));
-    assert!(!activation.contains("None, CLSCTX_ALL"));
-    assert!(activation.contains("AO_NOERRORUI,"));
-    assert!(activation.contains("CoUninitialize();"));
 }
 
 #[cfg(windows)]
