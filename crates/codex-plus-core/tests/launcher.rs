@@ -835,7 +835,46 @@ fn launcher_packaged_activation_does_not_directly_fallback_to_windowsapps_exe() 
     let source = include_str!("../src/launcher.rs");
 
     assert!(!source.contains("launcher.packaged_activation_cdp_unready_direct_fallback"));
+    assert!(!source.contains("launcher.packaged_activation_fallback"));
+    assert!(source.contains("return Err(error).with_context(||"));
+    assert!(source.contains("direct executable fallback is disabled to preserve package identity"));
     assert!(!source.contains("terminate_windows_process_id(process_id).await"));
+}
+
+#[test]
+fn launcher_packaged_activation_requires_the_out_of_process_windows_broker() {
+    let source = include_str!("../src/launcher.rs");
+    let start = source.find("fn activate_packaged_app_blocking(").unwrap();
+    let activation = &source[start..source[start..].find("#[cfg(test)]").unwrap() + start];
+
+    assert!(activation.contains(
+        "CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?"
+    ));
+    assert!(!activation.contains("None, CLSCTX_ALL"));
+    assert!(activation.contains("AO_NOERRORUI,"));
+    assert!(activation.contains("CoUninitialize();"));
+}
+
+#[cfg(windows)]
+#[tokio::test]
+async fn launcher_missing_package_reports_activation_failure_without_spawning_its_exe() {
+    let temp = tempfile::tempdir().unwrap();
+    let app_dir = temp.path().join("OpenAI.Codex_0.0.0.0_x64__missingtestpkg/app");
+    std::fs::create_dir_all(&app_dir).unwrap();
+    std::fs::write(app_dir.join("ChatGPT.exe"), "not an executable").unwrap();
+    let settings = BackendSettings {
+        codex_app_native_menu_localization: false,
+        ..BackendSettings::default()
+    };
+
+    let error = DefaultLaunchHooks::default()
+        .launch_codex(&app_dir, 19229, &settings, &[])
+        .await
+        .expect_err("an unregistered package must not fall back to its executable");
+
+    assert!(error.to_string().contains("failed to activate packaged Codex app"));
+    assert!(error.to_string().contains("OpenAI.Codex_missingtestpkg!App"));
+    assert!(!error.to_string().contains("failed to launch Codex executable"));
 }
 
 #[cfg(windows)]

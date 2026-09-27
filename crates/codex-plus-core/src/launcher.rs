@@ -945,6 +945,14 @@ impl LaunchHooks for DefaultLaunchHooks {
                 };
                 match activate_packaged_app(app_user_model_id, arguments).await {
                     Ok(process_id) => {
+                        let _ = crate::diagnostic_log::append_diagnostic_log(
+                            "launcher.packaged_activation_started",
+                            serde_json::json!({
+                                "app_user_model_id": app_user_model_id,
+                                "process_id": process_id,
+                                "activation_context": "local_server"
+                            }),
+                        );
                         apply_codexplusplus_window_icon_after_launch(process_id);
                         if let Some(inspector_port) = native_menu_inspector_port {
                             start_native_menu_localizer(inspector_port);
@@ -963,16 +971,22 @@ impl LaunchHooks for DefaultLaunchHooks {
                         });
                     }
                     Err(error) => {
-                        // AUMID 激活失败（例如清单 Application Id 变化）时回退到
-                        // 直接执行应用，避免整份配置无法启动。
+                        // Store 应用必须保留包身份；直接执行 WindowsApps 下的 EXE
+                        // 会让新版宿主报 APPMODEL_ERROR_NO_PACKAGE，不能作为回退。
                         let _ = crate::diagnostic_log::append_diagnostic_log(
-                            "launcher.packaged_activation_fallback",
+                            "launcher.packaged_activation_failed",
                             serde_json::json!({
                                 "app_user_model_id": app_user_model_id,
                                 "app_dir": app_dir,
-                                "error": error.to_string()
+                                "error": format!("{error:#}")
                             }),
                         );
+                        return Err(error).with_context(|| {
+                            format!(
+                                "failed to activate packaged Codex app {app_user_model_id}; \
+                                 direct executable fallback is disabled to preserve package identity"
+                            )
+                        });
                     }
                 }
             }
@@ -3422,9 +3436,11 @@ pub async fn activate_packaged_app(
 #[cfg(windows)]
 fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> anyhow::Result<u32> {
     use windows::Win32::System::Com::{
-        CLSCTX_ALL, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
+        CLSCTX_LOCAL_SERVER, COINIT_APARTMENTTHREADED, CoCreateInstance, CoInitializeEx, CoUninitialize,
     };
-    use windows::Win32::UI::Shell::{ApplicationActivationManager, IApplicationActivationManager};
+    use windows::Win32::UI::Shell::{
+        AO_NOERRORUI, ApplicationActivationManager, IApplicationActivationManager,
+    };
     use windows::core::HSTRING;
 
     unsafe {
@@ -3440,12 +3456,14 @@ fn activate_packaged_app_blocking(app_user_model_id: &str, arguments: &str) -> a
         })?;
 
         let result: windows::core::Result<u32> = (|| {
+            // 通过 Windows 的进程外激活代理启动 MSIX。CLSCTX_ALL 允许使用进程内
+            // 激活器，在新版 ChatGPT/Owl 宿主（尤其是提升权限的启动器）上会丢失包身份。
             let manager: IApplicationActivationManager =
-                CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_ALL)?;
+                CoCreateInstance(&ApplicationActivationManager, None, CLSCTX_LOCAL_SERVER)?;
             let process_id = manager.ActivateApplication(
                 &HSTRING::from(app_user_model_id),
                 &HSTRING::from(arguments),
-                windows::Win32::UI::Shell::ACTIVATEOPTIONS(0),
+                AO_NOERRORUI,
             )?;
             Ok(process_id)
         })();
